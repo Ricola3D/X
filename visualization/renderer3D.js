@@ -1916,6 +1916,337 @@ X.renderer3D.prototype.destroy = function() {
   
 };
 
+/**
+ * Get the 3d point corresponding to the given position on the viewport. POSSIBLE UPGRADES : use the 2d picking to use pick3dObjectPoint instead of pick3dPoint
+ * 
+ * @param {number} x The x-coordinate on the screen.
+ * @param {number} y The z-coordinate on the screen.
+ * @return {Array} The result of the intersection.
+ */
+X.renderer3D.prototype.pick3d = function(x, y) {
+  var inv_view_matrix = this._camera._view.getInverse();
+  var direction = this._camera.unproject((x/this._width)*2-1, ((this._height-y)/this._height)*2-1); // normalize the values + inverse y
+  var center = this._center;
+  
+  // the scene centroid point
+  var centroid = new X.matrix(4,1);
+  centroid.setValueAt(0,0,this._center[0]);
+  centroid.setValueAt(1,0,this._center[1]);
+  centroid.setValueAt(2,0,this._center[2]);
+  centroid.setValueAt(3,0,1);
+  
+  // the camera position as an object of the scene
+  var camera_center = new X.matrix(4,1);
+  camera_center.setValueAt(0,0,0); // don't forget in OpenGL the camera always is at (0,0,0), it's the scene that moves
+  camera_center.setValueAt(1,0,0);
+  camera_center.setValueAt(2,0,0);
+  camera_center.setValueAt(3,0,1);
+  camera_center = inv_view_matrix.multiply(camera_center);
+  camera_center = camera_center.add(centroid); // xtk translates the scene so it is rendered as centered on [0,0,0] before applying the view_matrix
+  camera_center = new Array(camera_center.getValueAt(0,0), camera_center.getValueAt(1,0), camera_center.getValueAt(2,0)); // array of the 3 coordinates
+  
+  // get the 3d point
+  var picked = this.find3dPoint(camera_center, direction);
+};
+
+
+/**
+ * Compute intersection between a ray given by a point and a vector, and the axis oriented bounding box of an object. POSSIBLE UPGRADES : new versions without different types of detections ?
+ * 
+ * @param {Array} point The ray start point.
+ * @param {Array} vector The ray direction in 3D space.
+ * @param {X.object} object The object whose bounding box is used.
+ * @return {Boolean} The result of the intersection.
+ */
+X.renderer3D.prototype.intersectionRayAABB = function(point, vector, object) {
+  var xmin = object.points._minA, ymin = object.points._minB, zmin = object.points._minC, xmax = object.points._maxA, ymax = object.points._maxB, zmax = object.points._maxC;
+  // if the ray is almost parallel to an axis, check if its coordinate is out of the scene square. This avoids high numbers in the following part
+  if (Math.abs(vector[0])<0.00001 && (point[0]<xmin || point[0]>xmax)) return false;
+  if (Math.abs(vector[1])<0.00001 && (point[2]<zmin || point[2]>zmax)) return false;
+  if (Math.abs(vector[2])<0.00001 && (point[1]<ymin || point[1]>ymax)) return false;
+  if (Math.abs(vector[0])<0.00001 && point[0]>xmin && point[0]<xmax) return true;
+  if (Math.abs(vector[1])<0.00001 && point[2]>zmin && point[2]<zmax) return true;
+  if (Math.abs(vector[2])<0.00001 && point[1]>ymin && point[1]<ymax) return true;
+  
+  // x-coordinate : (E1) point.x+nxmin*vector.x <= AABB <= point.x+nxmax*vector.x
+  var nxmin=0, nxmax=0;
+  if (vector[0]!=0) {
+    if (vector[0]>0) {
+      nxmin = ( xmin - point[0] ) / vector[0];
+      nxmax = ( xmax - point[0] ) / vector[0];
+    } else {
+      nxmax = ( xmin - point[0] ) / vector[0];
+      nxmin = ( xmax - point[0] ) / vector[0];
+    }
+  }
+  // y coordinate : (E2) point.y+nymin*vector.y <= AABB <= point.y+nymax*vector.y
+  var nymin=0, nymax=0;
+  if (vector[1]!=0) {
+    if (vector[1]>0) {
+      nymin = ( ymin - point[1] ) / vector[1];
+      nymax = ( ymax - point[1] ) / vector[1];
+    } else {
+      nymax = ( ymin - point[1] ) / vector[1];
+      nymin = ( ymax - point[1] ) / vector[1];
+    }
+  }    
+  // z coordinate : (E3) point.y+nymin*vector.y <= AABB <= point.y+nymax*vector.y
+  var nzmin=0, nzmax=0;
+  if (vector[2]!=0) {
+    if (vector[2]>0) {
+      nzmin = ( zmin - point[2] ) / vector[2];
+      nzmax = ( zmax - point[2] ) / vector[2];
+    } else {
+      nzmax = ( zmin - point[2] ) / vector[2];
+      nzmin = ( zmax - point[2] ) / vector[2];
+    }
+  }
+  
+  // we check if the 3 equation can be verified by 1 point : point+nmin*vector <= AABB <= point+nmax*vector
+  var nmin = Math.max(nxmin,nymin,nzmin);
+  var nmax = Math.min(nxmax,nymax,nzmax);
+  if (nmin>nmax) return false; // no solution to the system {(E1), (E2), (E3)}
+  return true; // there is a solution (= an intersection)
+}
+
+
+/**
+ * Compute intersection between a ray given by a point and a vector, and an object. CAUTION : this method works on oriented triangles : the intersection is taken only if the ray comes from outside the triangle. 
+ * 
+ * @param {Array} point The ray start point.
+ * @param {Array|X.matrix} direction The ray direction in 3D space.
+ * @param {X.object} object The object whose bounding box is used.
+ * @return {Array} The intersection point the nearest of the ray start point.
+ */
+X.renderer3D.prototype.find3dObjectPoint = function(point, direction, object) {
+  var result = new Array(); // the buffer for the resulting points : several intersection can be found depending of the mesh quality
+  
+  // for the moment works on every X.object, but will only work for objects with ._points not empty
+  if (!goog.isDefAndNotNull(direction) || !goog.isDefAndNotNull(point) || !point instanceof Array || !point.length==3 || object instanceof X.object) throw new Error("Invalid parameters.");
+  
+  // transform direction in Array if required (optional)
+  var vector = null;
+  if (direction instanceof Array && direction.length==3) vector = direction;
+  if (direction instanceof X.matrix) vector = direction.toArray();
+  if (!goog.isDefAndNotNull(vector)) throw new Error("Invalid input direction");
+  
+  //the number of intersections opposed to the ray, for information
+  var opposits = 0;
+  
+  // only keep objects whose AABB intersect the ray
+  if (!this.intersectionRayAABB(point, vector, object)) {
+    window.console.log("Not this one");
+  } else {
+    window.console.log("One to test");
+    var length = object._points.count / 3; // number of triangles
+    window.console.log("There are "+length+" triangles to check");
+    if (length==0) return new Array(); // if the object has no ._points skip and return an empty array
+    
+	// look through the triangles and test them
+	for (var j=0 ; j<length ; j++) {
+      if (j%500==0) window.console.log("Triangle n°"+j);
+	  
+	  // get the 3 objects of the game
+      var x = object._points.get(3*j);
+      var y = object._points.get(3*j+1);
+      var z = object._points.get(3*j+2);
+	  
+	  // 2 edges of the triangle
+      var u = new goog.math.Vec3(y[0] - x[0], y[1] - x[1], y[2] - x[2]);
+      var v = new goog.math.Vec3(z[0] - x[0], z[1] - x[1], z[2] - x[2]);
+	  
+	  // normal of the triangle (going outside with normal conventions)
+      var n = goog.math.Vec3.cross(u,v);
+      if (Math.abs(n.x)<0.00001 & Math.abs(n.y)<0.00001 Math.abs(n.z)<0.00001) {
+        window.console.log("Degenerated triangle"); // the triange has 1 side very tiny comparated to the others or is almost null
+        continue;
+      }
+	  
+	  // direction from the triangle to the ray start point
+      var w0 = new goog.math.Vec3(point[0] - x[0],point[1] - x[1],point[2] - x[2]);
+	  
+	  // here we compute r : the number of times we have to sum the direction vector to reach the plan of the triangle
+      var a = -goog.math.Vec3.dot(n,w0); // = (-1) * norm of the normal of the triangle * length of the projection of the w0 vector on the normal = (-1) * distance(ray start point, plan of the triangle) = (-1)*length(normal to the plan that goes through the ray start point)
+      var b = goog.math.Vec3.dot(n, new goog.math.Vec3(vector[0],vector[1],vector[2])); // = norm of the normal of the triangle * length of the projection of direction vector on the normal
+      if (Math.abs(b)<0.00001) {
+        window.console.log("The ray is almost parallel to the triangle"); // we eliminate those triangles because of the future division by b
+        continue;
+      }
+      var r = a/b;
+	  
+	  // Test if the ray goes to the opposite of the triangle. This may happen too often to log it without provoking laggs.
+      if (r<0) {
+        opposits = opposits + 1;
+        continue;
+		// POSSIBLE UPGRADE : do not eliminate those triangles with just making "r=Math.abs(r);"
+      }
+	  // vi : the point at the intersection of the plan of the triangle and the ray
+      var vi = goog.math.Vec3.sum(new goog.math.Vec3(point[0],point[1],point[2]),new goog.math.Vec3(r*vector[0],r*vector[1],r*vector[2]));
+	  
+	  // coefficients for the later projection in the basis made by the 2 first edges of the triangle
+      var uu = goog.math.Vec3.dot(u,u), vv = goog.math.Vec3.dot(v,v), uv = goog.math.Vec3.dot(u,v);
+	  
+	  // vector from the 1st edge of the triangle to the intersection ray-plan
+      var w = vi.subtract(new goog.math.Vec3(x[0],x[1],x[2]));
+	  
+	  // norm(u|v) * coordinates of the projection of w on u|v;
+      var wu = goog.math.Vec3.dot(w,u);
+      var wv = goog.math.Vec3.dot(w,v);
+	  
+	  
+      var D = uv * uv - uu * vv;
+      var s,t; // coordinates of the intersection point in the basis made by the 2 first edges of the triangle
+      s = (uv * wv - vv * wu) / D;
+      if (s < 0.0 || s > 1.0) continue; // point outside
+      t = (uv * wu - uu * wv) / D;
+      if (t < 0.0 || (s + t) > 1.0) continue; // point outside
+      window.console.log("this one!");
+	  
+	  // parametric coordinates of the intersection point inside the triangle
+      result.push([x[0]+s*u.x+t*v.x, x[1]+s*u.y+t*v.y, x[2]+s*u.z+t*v.z]);
+    }
+  }
+  window.console.log("There are "+opposits+" opposits triangles");
+  
+    // get the point nearest of the ray start point
+  var nb_points = result.length;
+  window.console.log(nb_points+" points were found");
+  if (nb_points==0) return new Array();
+  else {
+    var nearest = result[0];
+    for (var p=1 ; p<nb_points ; p++) {
+      var sqDistNearestPoint = (vector[0]-nearest[0])*(vector[0]-nearest[0]) + (vector[1]-nearest[1])*(vector[1]-nearest[1]) + (vector[2]-nearest[2])*(vector[2]-nearest[2]);
+      var sqDistThisPoint = (vector[0]-result[p][0])*(vector[0]-result[p][0]) + (vector[1]-result[p][1])*(vector[1]-result[p][1]) + (vector[2]-result[p][2])*(vector[2]-result[p][2]);
+      if (sqDistThisPoint<sqDistNearestPoint) nearest=result[p];
+    }
+    return nearest;
+  }
+  
+};
+
+
+/**
+ * Compute intersection between a ray given by a point and a vector and the objects in the scene. CAUTION : this method works on oriented triangles : the intersection is taken only if the ray comes from outside the triangle. 
+ * 
+ * @param {Array} point The ray start point.
+ * @param {Array|X.matrix} direction The ray direction in 3D space.
+ * @return {Array} The intersection point the nearest of the ray start point.
+ */
+X.renderer3D.prototype.find3dPoint = function(point, direction) {
+  var result = new Array(); // the buffer for the resulting points : several intersection can be found depending of the mesh quality
+  
+  // for the moment works on every X.object, but will only work for objects with ._points not empty
+  if (!goog.isDefAndNotNull(direction) || !goog.isDefAndNotNull(point) || !point instanceof Array || !point.length==3 || object instanceof X.object) throw new Error("Invalid parameters.");
+  
+  // transform direction in Array if required (optional)
+  var vector = null;
+  if (direction instanceof Array && direction.length==3) vector = direction;
+  if (direction instanceof X.matrix) vector = direction.toArray();
+  if (!goog.isDefAndNotNull(vector)) throw new Error("Invalid input direction");
+  
+  // get all the objects of the renderer
+  var objects = this._objects.values();
+  window.console.log("There are "+objects.length+" not-empty objects.");
+  
+  for (var i in objects) {
+    
+      //the number of intersections opposed to the ray, for information
+      var opposits = 0;
+	
+      var object = objects[i];
+      window.console.log("The object is "+object._caption);
+  
+	  // only keep objects whose AABB intersect the ray
+	  if (!this.intersectionRayAABB(point, vector, object)) {
+		window.console.log("Not this one");
+	  } else {
+		window.console.log("One to test");
+		var length = object._points.count / 3; // number of triangles
+		window.console.log("There are "+length+" triangles to check");
+		if (length==0) return new Array(); // if the object has no ._points skip and return an empty array
+		
+		// look through the triangles and test them
+		for (var j=0 ; j<length ; j++) {
+		  if (j%500==0) window.console.log("Triangle n°"+j);
+		  
+		  // get the 3 objects of the game
+		  var x = object._points.get(3*j);
+		  var y = object._points.get(3*j+1);
+		  var z = object._points.get(3*j+2);
+		  
+		  // 2 edges of the triangle
+		  var u = new goog.math.Vec3(y[0] - x[0], y[1] - x[1], y[2] - x[2]);
+		  var v = new goog.math.Vec3(z[0] - x[0], z[1] - x[1], z[2] - x[2]);
+		  
+		  // normal of the triangle (going outside with normal conventions)
+		  var n = goog.math.Vec3.cross(u,v);
+		  if (Math.abs(n.x)<0.00001 & Math.abs(n.y)<0.00001 Math.abs(n.z)<0.00001) {
+			window.console.log("Degenerated triangle"); // the triange has 1 side very tiny comparated to the others or is almost null
+			continue;
+		  }
+		  
+		  // direction from the triangle to the ray start point
+		  var w0 = new goog.math.Vec3(point[0] - x[0],point[1] - x[1],point[2] - x[2]);
+		  
+		  // here we compute r : the number of times we have to sum the direction vector to reach the plan of the triangle
+		  var a = -goog.math.Vec3.dot(n,w0); // = (-1) * norm of the normal of the triangle * length of the projection of the w0 vector on the normal = (-1) * distance(ray start point, plan of the triangle) = (-1)*length(normal to the plan that goes through the ray start point)
+		  var b = goog.math.Vec3.dot(n, new goog.math.Vec3(vector[0],vector[1],vector[2])); // = norm of the normal of the triangle * length of the projection of direction vector on the normal
+		  if (Math.abs(b)<0.00001) {
+			window.console.log("The ray is almost parallel to the triangle"); // we eliminate those triangles because of the future division by b
+			continue;
+		  }
+		  var r = a/b;
+		  
+		  // Test if the ray goes to the opposite of the triangle. This may happen too often to log it without provoking laggs.
+		  if (r<0) {
+			opposits = opposits + 1;
+			continue;
+			// POSSIBLE UPGRADE : do not eliminate those triangles with just making "r=Math.abs(r);"
+		  }
+		  // vi : the point at the intersection of the plan of the triangle and the ray
+		  var vi = goog.math.Vec3.sum(new goog.math.Vec3(point[0],point[1],point[2]),new goog.math.Vec3(r*vector[0],r*vector[1],r*vector[2]));
+		  
+		  // coefficients for the later projection in the basis made by the 2 first edges of the triangle
+		  var uu = goog.math.Vec3.dot(u,u), vv = goog.math.Vec3.dot(v,v), uv = goog.math.Vec3.dot(u,v);
+		  
+		  // vector from the 1st edge of the triangle to the intersection ray-plan
+		  var w = vi.subtract(new goog.math.Vec3(x[0],x[1],x[2]));
+		  
+		  // norm(u|v) * coordinates of the projection of w on u|v;
+		  var wu = goog.math.Vec3.dot(w,u);
+		  var wv = goog.math.Vec3.dot(w,v);
+		  
+		  
+		  var D = uv * uv - uu * vv;
+		  var s,t; // coordinates of the intersection point in the basis made by the 2 first edges of the triangle
+		  s = (uv * wv - vv * wu) / D;
+		  if (s < 0.0 || s > 1.0) continue; // point outside
+		  t = (uv * wu - uu * wv) / D;
+		  if (t < 0.0 || (s + t) > 1.0) continue; // point outside
+		  window.console.log("this one!");
+		  
+		  // parametric coordinates of the intersection point inside the triangle
+		  result.push([x[0]+s*u.x+t*v.x, x[1]+s*u.y+t*v.y, x[2]+s*u.z+t*v.z]);
+		}
+	  }
+	  window.console.log("There are "+opposits+" opposits triangles");
+  }
+  
+  // get the point nearest of the ray start point
+  var nb_points = result.length;
+  window.console.log(nb_points+" points were found");
+  if (nb_points==0) return new Array();
+  else {
+    var nearest = result[0];
+    for (var p=1 ; p<nb_points ; p++) {
+      var sqDistNearestPoint = (vector[0]-nearest[0])*(vector[0]-nearest[0]) + (vector[1]-nearest[1])*(vector[1]-nearest[1]) + (vector[2]-nearest[2])*(vector[2]-nearest[2]);
+      var sqDistThisPoint = (vector[0]-result[p][0])*(vector[0]-result[p][0]) + (vector[1]-result[p][1])*(vector[1]-result[p][1]) + (vector[2]-result[p][2])*(vector[2]-result[p][2]);
+      if (sqDistThisPoint<sqDistNearestPoint) nearest=result[p];
+    }
+    return nearest;
+  }
+};
+
 
 // export symbols (required for advanced compilation)
 goog.exportSymbol('X.renderer3D', X.renderer3D);
@@ -1935,3 +2266,11 @@ goog.exportSymbol('X.renderer3D.prototype.resetBoundingBox',
 goog.exportSymbol('X.renderer3D.prototype.resetViewAndRender',
     X.renderer3D.prototype.resetViewAndRender);
 goog.exportSymbol('X.renderer3D.prototype.pick', X.renderer3D.prototype.pick);
+    X.renderer3D.prototype.resetViewAndRender);
+goog.exportSymbol('X.renderer3D.prototype.intersectionRayAABB', X.renderer3D.prototype.intersectionRayAABB);
+    X.renderer3D.prototype.resetViewAndRender);
+goog.exportSymbol('X.renderer3D.prototype.pick3d', X.renderer3D.prototype.pick3d);
+    X.renderer3D.prototype.resetViewAndRender);
+goog.exportSymbol('X.renderer3D.prototype.find3dPoint', X.renderer3D.prototype.find3dPoint);
+    X.renderer3D.prototype.resetViewAndRender);
+goog.exportSymbol('X.renderer3D.prototype.find3dObjectPoint', X.renderer3D.prototype.find3dObjectPoint);
