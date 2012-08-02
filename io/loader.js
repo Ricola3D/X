@@ -340,7 +340,7 @@ X.loader.prototype.failed = function(request, container, object) {
 X.loader.extensions = {
   // support for the following extensions and the mapping to X.parsers as well
   // as some custom flags and the result type
-  'STL': [X.parserSTL, null, null],
+  'STL': [X.parserSTL, null, 'arraybuffer'],
   'VTK': [X.parserVTK, null, null],
   'TRK': [X.parserTRK, null, null],
   // FSM, INFLATED, SMOOTHWM, SPHERE, PIAL and ORIG are all freesurfer meshes

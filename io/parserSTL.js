@@ -65,92 +65,100 @@ goog.inherits(X.parserSTL, X.parser);
  * @inheritDoc
  */
 X.parserSTL.prototype.parse = function(container, object, data, flag) {
-
-  // the size which can be either number of lines for ASCII data
-  // or the number of triangles for binary data
-  var _size = 0;
   
-  var _parseFunction = null;
-  
-  // check if this is an ascii STL file or a binary one
-  if ( data.substr(0, 5) == 'solid' ) {
-
-    // this is an ascii STL file
-
-    // get the number of lines
-    _size = data.split('\n').length;
-
-    // set the parse function for ASCII
-    _parseFunction = this.parseLine.bind(this);
-
-  } else {
-
-    // this is a binary STL file (http://en.wikipedia.org/wiki/STL_(file_format))
-
-    // A binary STL file has an 80 character header (which is generally
-    // ignored, but which should never begin with 'solid' because that will
-    // lead most software to assume that this is an ASCII STL file).
-    var header_data = data.slice(0, 80);
-
-    // Following the header is a 4 byte unsigned integer indicating
-    // the number of triangular facets in the file.
-    _size = this.parseUInt32(data, 80);
-
-    // set the parse function for binary
-    _parseFunction = this.parseBytes.bind(this);
-
-  }
-
   var p = object._points;
   var n = object._normals;
-
-  //
-  // THE LOOP
-  //
-  // This uses an optimized loop.
-  //
-
-  //
-  // This one is shorter but Fast Duff's Device is slightly faster on average.
-  //
-  // var i = numberOfLines;
-  // do {
-  // i--;
-  //    
-  // this.parseLine_(p, n, dataAsArray[i]);
-  //    
-  // } while (i > 0);
-
-  /*
-   * Fast Duff's Device @author Miller Medeiros <http://millermedeiros.com>
-   * 
-   * @version 0.3 (2010/08/25)
-   */
-  var i = 0;
-  var n2 = _size % 8;
-  while (n2--) {
-    _parseFunction(p, n, data, i);
-    i++;
+  
+  if (!data instanceof ArrayBuffer) throw new Error("Bad input type");
+  
+  var Uint8_data = new Uint8Array(data);
+  
+  var begin = "";
+  for (var i = 0 ; i<5 ; i++) {
+    begin = begin + String.fromCharCode(Uint8_data[i] & 0xff);
   }
+  
+  if (begin=="solid") {
+  
+    // ASCII STL
+  
+    var i = 0;
+    var lines = new Array();
+    
+    // parsing into JS string and at the same time in an array of lines (Uint16)
+    var charCode;
+    var line = "";
+    while (i<Uint8_data.length) {
+      charCode = Uint8_data[i] & 0xff;
+      if (charCode == 0x0A) {
+        lines.push(line);
+        line="";
+      } else line += String.fromCharCode(charCode);
+      i++;
+    }
+    
+    // read the file (optional) name (it is at least 1 space)
+    var name = lines.pop();
+    if (name!=" ") object._caption = name;
+    
+    var _size = lines.length;
+    
+    /*
+     * Fast Duff's Device @author Miller Medeiros <http://millermedeiros.com>
+     * 
+     * @version 0.3 (2010/08/25)
+     */
+    var i = 0;
+    var n2 = _size % 8;
+    while (n2--) {
+      this.parseLine(p, n, lines, i);
+      i++;
+    }
 
-  n2 = (_size * 0.125) ^ 0;
-  while (n2--) {
-    _parseFunction(p, n, data, i);
-    i++;
-    _parseFunction(p, n, data, i);
-    i++;
-    _parseFunction(p, n, data, i);
-    i++;
-    _parseFunction(p, n, data, i);
-    i++;
-    _parseFunction(p, n, data, i);
-    i++;
-    _parseFunction(p, n, data, i);
-    i++;
-    _parseFunction(p, n, data, i);
-    i++;
-    _parseFunction(p, n, data, i);
-    i++;
+    n2 = (_size * 0.125) ^ 0;
+    while (n2--) {
+      this.parseLine(p, n, lines, i);
+      i++;
+      this.parseLine(p, n, lines, i);
+      i++;
+      this.parseLine(p, n, lines, i);
+      i++;
+      this.parseLine(p, n, lines, i);
+      i++;
+      this.parseLine(p, n, lines, i);
+      i++;
+      this.parseLine(p, n, lines, i);
+      i++;
+      this.parseLine(p, n, lines, i);
+      i++;
+      this.parseLine(p, n, lines, i);
+      i++;
+    }
+  } else {
+    
+    // BINARY STL
+    
+    // read the header
+    var name = "";
+    for (var i=0 ; i<80 ; i++) {
+      name = name + String.fromCharCode(Uint8_data[i] & 0xff);
+    }
+    object._caption = name;
+    
+    // number of triangles
+    var Uint32_subdata = new Uint32Array(data.slice(80,84)); //4 bytes
+    var n_triangles = Uint32_subdata[0];
+    
+    // read the triangles
+    for (var i=0 ; i<n_triangles ; i++) { // 50 bytes per triangle
+      var Float32_data = new Float32Array(data.slice(84+i*50,132+i*50)); // 48 bytes (4 per float, 3 floats per vector, 4 vectors) = 12 floats
+      var Uint16_data = new Uint16Array(data.slice(132+i*50,134+i*50)); // 2 bytes for byte summ (must be 0 in standard) = 1 integer
+      for (var k=1 ; k<4 ; k++) {
+        p.add(Float32_data[3*k],Float32_data[3*k+1],Float32_data[3*k+2]);
+        n.add(Float32_data[0],Float32_data[1],Float32_data[2]); // for flat shading
+      }
+    }
+    alert(n_triangles+">"+p.count+":"+n.count+"=>"+data.byteLength);
   }
 
   // the object should be set up here, so let's fire a modified event
@@ -204,59 +212,6 @@ X.parserSTL.prototype.parseLine = function(p, n, data, index) {
 
 };
 
-
-/**
- * Parses a triangle of .STL data and modifies the given X.triplets containers.
- * Original embodiment by Matthew Goodman (meawoppl@gmail.com)
- * 
- * @param {!X.triplets} p The object's points as a X.triplets container.
- * @param {!X.triplets} n The object's normals as a X.triplets container.
- * @param {!String} data The data to parse.
- * @param {!number} index The index of the current triangle.
- */
-X.parserSTL.prototype.parseBytes = function(p, n, data, index) {
-
-  // each triangle consists of 50 bytes to parse
-  // so incorporate it in the individual offset
-  // and also add the 84 bytes from the header
-  var offset = 84 + index * 50;
-  
-  // foreach triangle
-  // REAL32[3] â Normal vector
-  var normal = this.parseFloat32Array(data, offset, 3)[0];
-  offset += 3 * 4;
-
-  // REAL32[3] â Vertex 1
-  var v1 = this.parseFloat32Array(data, offset, 3)[0];
-  offset += 3 * 4;
-
-  // REAL32[3] â Vertex 2
-  var v2 = this.parseFloat32Array(data, offset, 3)[0];
-  offset += 3 * 4;
-
-  // REAL32[3] â Vertex 3
-  var v3 = this.parseFloat32Array(data, offset, 3)[0];
-  offset += 3 * 4;
-
-  // MRG TODO:
-  // The above could probably be made faster by
-  // making a single read of 12 float32 values.
-
-  // UINT16 â Attribute byte count
-  var attributes = this.parseUInt16(data, offset)[0];
-  offset += 2;
-
-  // Add the vertices
-  p.add(v1[0], v1[1], v1[2]);
-  p.add(v2[0], v2[1], v2[2]);
-  p.add(v3[0], v3[1], v3[2]);
-
-  // Add the Normals
-  n.add(normal[0], normal[1], normal[2]);
-  n.add(normal[0], normal[1], normal[2]);
-  n.add(normal[0], normal[1], normal[2]);
-
-};
 
 // export symbols (required for advanced compilation)
 goog.exportSymbol('X.parserSTL', X.parserSTL);
