@@ -536,7 +536,7 @@ X.renderer.prototype.init = function(_contextName) {
     this.style.border = "0 none";
     this.style.outline = "0 none";
   }
-  _canvas.onfocus = hideStyle:
+  _canvas.onfocus = hideStyle;
   _canvas.onblur = hideStyle;
 
   // --------------------------------------------------------------------------
