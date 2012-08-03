@@ -1916,6 +1916,7 @@ X.renderer3D.prototype.destroy = function() {
   
 };
 
+
 /**
 * Compute intersection between a ray given by a point and a vector, and the axis oriented bounding box of an object. POSSIBLE UPGRADES : new versions without different types of detections ?
 *
@@ -2233,6 +2234,9 @@ goog.exportSymbol('X.renderer3D.prototype.resetBoundingBox',
     X.renderer3D.prototype.resetBoundingBox);
 goog.exportSymbol('X.renderer3D.prototype.resetViewAndRender',
     X.renderer3D.prototype.resetViewAndRender);
-goog.exportSymbol('X.renderer3D.prototype.pick', X.renderer3D.prototype.pick);
-goog.exportSymbol('X.renderer3D.prototype.intersectionRayAABB', X.renderer3D.prototype.intersectionRayAABB);
-goog.exportSymbol('X.renderer3D.prototype.pick3d', X.renderer3D.prototype.pick3d);
+goog.exportSymbol('X.renderer3D.prototype.pick',
+    X.renderer3D.prototype.pick);
+goog.exportSymbol('X.renderer3D.prototype.intersectionRayAABB',
+    X.renderer3D.prototype.intersectionRayAABB);
+goog.exportSymbol('X.renderer3D.prototype.pick3d',
+    X.renderer3D.prototype.pick3d);
