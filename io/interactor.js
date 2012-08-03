@@ -322,12 +322,12 @@ X.interactor.prototype.init = function() {
   if (this._config['KEYBOARD_ENABLED']) {
     
     // the google closure way did not work, so let's do it this way..
-    window.onkeydown = this.onKey_.bind(this);
+    this._element.onkeydown = this.onKey_.bind(this);
     
   } else {
     
     // remove the keyboard observer
-    window.onkeydown = null;
+    this._element.onkeydown = null;
     
   }
   
@@ -480,13 +480,9 @@ X.interactor.prototype.onMouseMovementOutside_ = function(event) {
 
   // reset the click flags
   this._mouseInside = false;
-  if (this._config['KEYBOARD_ENABLED']) {
-    
-    // if we observe the keyboard, remove the observer here
-    // this is necessary if there are more than one renderer in the document
-    window.onkeydown = null;
-    
-  }
+
+  // remove the focus on the element
+  this._element.blur();
   
   this._leftButtonDown = false;
   this._middleButtonDown = false;
@@ -528,15 +524,9 @@ X.interactor.prototype.onMouseMovementInside_ = function(event) {
   // advanced compilation
   eval("this.onMouseMove(this['mousemoveEvent'])");
   
-  this._mouseInside = true;
+  this._element.focus();
   
-  if (this._config['KEYBOARD_ENABLED'] && window.onkeydown == null) {
-    
-    // we re-gained the focus, enable the keyboard observer again!
-    window.onkeydown = this.onKey_.bind(this);
-    
-
-  }
+  this._mouseInside = true;
   
   // prevent any other actions by the browser (f.e. scrolling, selection..)
   event.preventDefault();

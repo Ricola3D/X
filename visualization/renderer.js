@@ -530,6 +530,14 @@ X.renderer.prototype.init = function(_contextName) {
   _canvas.width = this._width;
   _canvas.height = this._height;
   
+  // for key events
+  _canvas.tabIndex = 0;
+  function hideStyle(e) {
+    this.style.border = "0 none";
+    this.style.outline = "0 none";
+  }
+  _canvas.onfocus = hideStyle:
+  _canvas.onblur = hideStyle;
 
   // --------------------------------------------------------------------------
   //
