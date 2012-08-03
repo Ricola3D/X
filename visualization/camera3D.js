@@ -296,5 +296,54 @@ X.camera3D.prototype.lookAt_ = function(cameraPosition, targetPoint) {
   
 };
 
+/**
+* Unproject fuction.
+*
+* @param {number} x The x-coordinate on the viewport.
+* @param {number} y The x-coordinate on the viewport.
+* @return {Array} the resulting direction
+*/
+X.neoCamera3D.prototype.unproject = function (x,y) {
+  
+  // get the 4x4 (model-)view matrix
+  var mvMatrix = this._view.getInverse().getTranspose();
+  
+  // create the 4x4 projection matrix from the flatten gl version
+  var pMatrix = new X.matrix(4,4);
+  for (var i=0 ; i<16 ; i++) {
+    pMatrix.setValueAt(i - 4*Math.floor(i/4), Math.floor(i/4), this._perspective[i]);
+  }
+  
+  // compute the product and inverse it
+  var pmvMatrix = pMatrix.multiply(mvMatrix);
+  var inverse_pmvMatrix = pmvMatrix.getInverse();
+  if (!goog.isDefAndNotNull(inverse_pmvMatrix)) throw new Error("Could not inverse the transformation matrix.");
+  
+  // check if x & y are map in [-1,1] interval (required for the computations). Don't forget the y-coordinate is inversed when you pick.
+  if (x<-1 || x>1 || y<-1 || y>1) throw new Error("Invalid x or y coordinate, it must be between -1 and 1");
+  
+  // fill the 4x1 normalized (in [-1,1]) vector of the point of the screen in word camera world's basis
+  var point4f = new X.matrix(4,1);
+  point4f.setValueAt(0, 0, x);
+  point4f.setValueAt(1, 0, y);
+  point4f.setValueAt(2, 0, -1.0); // 2*?-1, with ?=0 for near plan and ?=1 for far plan
+  point4f.setValueAt(3, 0, 1.0); // homogeneous coordinate arbitrary set at 1
+  
+  // compute the picked ray in the world's basis in homogeneous coordinates
+  var ray4f = inverse_pmvMatrix.multiply(point4f);
+  if (ray4f.getValueAt(3,0)==0) throw new Error("Ray is not valid.");
+  
+  // return it in not-homogeneous coordinates to compute the direction in the world's basis
+  var point3f = new X.matrix(3,1);
+  point3f.setValueAt(0, 0, ray4f.getValueAt(0, 0) / ray4f.getValueAt(3, 0) );
+  point3f.setValueAt(1, 0, ray4f.getValueAt(1, 0) / ray4f.getValueAt(3, 0) );
+  point3f.setValueAt(2, 0, ray4f.getValueAt(2, 0) / ray4f.getValueAt(3, 0) );
+  var norm = Math.sqrt(point3f.getValueAt(0, 0)*point3f.getValueAt(0, 0)+point3f.getValueAt(1, 0)*point3f.getValueAt(1, 0)+point3f.getValueAt(2, 0)*point3f.getValueAt(2, 0));
+  
+  // return the normalised version
+  return point3f.multiply(1/norm).toArray();
+};
+
 goog.exportSymbol('X.camera3D', X.camera3D);
 goog.exportSymbol('X.camera3D.prototype.rotate', X.camera3D.prototype.rotate);
+goog.exportSymbol('X.camera3D.prototype.unproject', X.camera3D.prototype.unproject);
